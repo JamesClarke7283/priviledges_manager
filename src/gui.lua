@@ -29,11 +29,17 @@ local THEME = priviledges_manager.is_mcl and {
 	locked = "#4a3030",
 }
 
--- Layout constants.
-local W, H = 16.0, 11.5
-local PRIV_ROW_H = 0.95
+-- Layout constants. The formspec is deliberately wide so that long
+-- privilege descriptions fit on the right without being clipped.
+local W, H = 19.0, 12.0
+local PRIV_ROW_H = 1.15
 local CONTENT_X, CONTENT_Y = 6.1, 2.2
-local CONTENT_W, CONTENT_H = 8.9, 8.7
+local CONTENT_W, CONTENT_H = 12.0, 9.0
+
+-- Escape text for use inside a hypertext[] element.
+local function hesc(s)
+	return (s or ""):gsub("\\", "\\\\"):gsub("<", "\\<"):gsub(">", "\\>")
+end
 
 local function build_player_list(c)
 	local players = priviledges_manager.players.list(c.query)
@@ -61,17 +67,32 @@ local function build_priv_rows(c, viewer)
 
 	local privs = priviledges_manager.privs.all()
 	local held = minetest.get_player_privs(c.target)
-	local content_h = math.max(CONTENT_H, #privs * PRIV_ROW_H + 0.2)
+	local content_h = #privs * PRIV_ROW_H + 0.3
+
+	-- Size the scrollbar to the actual content so the full list is reachable
+	-- and the thumb reflects how much is visible.
+	local scroll_factor = 0.1
+	local overflow = math.max(0, content_h - CONTENT_H)
+	local max_units = math.ceil(overflow / scroll_factor)
+	local thumb = overflow > 0
+		and math.max(1, math.floor(max_units * CONTENT_H / overflow)) or 0
+	local value = math.min(c.scroll or 0, max_units)
 
 	local fs = {}
-	fs[#fs + 1] = "scrollbaroptions[arrows=default;thumbsize=30]"
+	fs[#fs + 1] = ("scrollbaroptions[arrows=default;max=%d;thumbsize=%d]"):format(
+		max_units, thumb)
 	fs[#fs + 1] = ("scrollbar[%f,%f;0.35,%f;vertical;privscroll;%d]"):format(
-		CONTENT_X + CONTENT_W + 0.05, CONTENT_Y, CONTENT_H, c.scroll or 0)
-	fs[#fs + 1] = ("scroll_container[%f,%f;%f,%f;privscroll;vertical;0.1]"):format(
-		CONTENT_X, CONTENT_Y, CONTENT_W, CONTENT_H)
+		CONTENT_X + CONTENT_W + 0.05, CONTENT_Y, CONTENT_H, value)
+	fs[#fs + 1] = ("scroll_container[%f,%f;%f,%f;privscroll;vertical;%f]"):format(
+		CONTENT_X, CONTENT_Y, CONTENT_W, CONTENT_H, scroll_factor)
+
+	-- Geometry shared by every row.
+	local btn_w, btn_h = 1.8, 0.7
+	local btn_x = CONTENT_W - btn_w - 0.7      -- toggle pinned to the right
+	local text_w = btn_x - 0.5                  -- room left for name + desc
 
 	for i, p in ipairs(privs) do
-		local y = (i - 1) * PRIV_ROW_H
+		local y = 0.1 + (i - 1) * PRIV_ROW_H
 		local is_on = held[p.name] == true
 		local grantable = priviledges_manager.privs.can_grant(viewer, p.name)
 		local btn = "t_" .. p.name
@@ -79,24 +100,28 @@ local function build_priv_rows(c, viewer)
 
 		-- Row background.
 		fs[#fs + 1] = ("box[0.1,%f;%f,%f;#ffffff10]"):format(
-			y + 0.05, CONTENT_W - 0.5, PRIV_ROW_H - 0.15)
+			y, CONTENT_W - 0.5, PRIV_ROW_H - 0.12)
 
-		-- Privilege name + description.
-		fs[#fs + 1] = ("label[0.35,%f;%s]"):format(y + 0.3, esc(p.name))
+		-- Privilege name.
+		fs[#fs + 1] = ("label[0.35,%f;%s]"):format(y + 0.28, esc(p.name))
+
+		-- Description in a wrapping hypertext box with a smaller font, so even
+		-- long descriptions stay within the row instead of being clipped.
 		if desc ~= "" then
-			fs[#fs + 1] = ("label[0.35,%f;%s]"):format(
-				y + 0.62, esc("\u{2937} " .. desc):sub(1, 90))
+			fs[#fs + 1] = ("hypertext[0.35,%f;%f,%f;d_%s;%s]"):format(
+				y + 0.5, text_w, PRIV_ROW_H - 0.55, p.name,
+				"<global size=13 color=#c8c8c8>" .. hesc(desc))
 		end
 
-		-- The toggle switch itself: a coloured track + a labelled button.
+		-- The toggle switch itself: a coloured button, vertically centred.
 		local colour = grantable and (is_on and THEME.on or THEME.off) or THEME.locked
 		local face = is_on and "ON" or "OFF"
 		if not grantable then
 			face = "\u{1F512}" -- padlock: cannot change this privilege
 		end
 		fs[#fs + 1] = ("style[%s;bgcolor=%s;textcolor=#ffffff]"):format(btn, colour)
-		fs[#fs + 1] = ("button[%f,%f;1.7,0.7;%s;%s]"):format(
-			CONTENT_W - 2.25, y + 0.1, btn, face)
+		fs[#fs + 1] = ("button[%f,%f;%f,%f;%s;%s]"):format(
+			btn_x, y + (PRIV_ROW_H - btn_h) / 2 - 0.06, btn_w, btn_h, btn, face)
 
 		local tip = desc ~= "" and desc or p.name
 		if not grantable then
@@ -192,6 +217,14 @@ minetest.register_on_player_receive_fields(function(player, formname, fields)
 	end
 
 	local rerender = false
+
+	-- Remember the scroll position so toggling a switch doesn't jump to top.
+	if fields.privscroll then
+		local ev = minetest.explode_scrollbar_event(fields.privscroll)
+		if ev.type == "CHG" then
+			c.scroll = ev.value
+		end
+	end
 
 	-- Live search (fires on Enter in the query field or the Search button).
 	if fields.query ~= nil and fields.query ~= c.query then
