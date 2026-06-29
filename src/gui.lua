@@ -107,7 +107,31 @@ local function build_priv_rows(c, viewer)
 
 	local privs = priviledges_manager.privs.all()
 	local held = minetest.get_player_privs(c.target)
-	local content_h = #privs * PRIV_ROW_H + 0.3
+
+	-- Geometry shared by every row. The toggle is pinned to the right and the
+	-- text is wrapped to end well before it, so they can never overlap.
+	local btn_w, btn_h = 1.7, 0.7
+	local btn_x = CONTENT_W - btn_w - 0.5      -- toggle pinned to the right
+	local text_right = btn_x - 0.3             -- text must end before here
+	local text_w = text_right - 0.5
+	-- Conservative character budget for the wrapped description (tuned for the
+	-- default font so it stays inside even if the smaller font is unavailable).
+	local desc_chars = math.max(12, math.floor(text_w / 0.23))
+	local LINE_H = 0.27
+
+	-- First pass: wrap every description (no truncation) and work out each
+	-- row's height so the full text always fits. Rows grow as tall as needed.
+	local rows = {}
+	local y = 0.1
+	for i, p in ipairs(privs) do
+		local desc = (p.def and p.def.description) or ""
+		local dlines = desc ~= "" and wrap(desc, desc_chars, math.huge) or {}
+		local row_h = #dlines > 0
+			and (0.52 + #dlines * LINE_H + 0.12) or 0.72
+		rows[i] = { p = p, desc = desc, dlines = dlines, y = y, h = row_h }
+		y = y + row_h + 0.06
+	end
+	local content_h = y + 0.05
 
 	-- Size the scrollbar to the actual content so the full list is reachable
 	-- and the thumb reflects how much is visible.
@@ -126,42 +150,27 @@ local function build_priv_rows(c, viewer)
 	fs[#fs + 1] = ("scroll_container[%f,%f;%f,%f;privscroll;vertical;%f]"):format(
 		CONTENT_X, CONTENT_Y, CONTENT_W, CONTENT_H, scroll_factor)
 
-	-- Geometry shared by every row. The toggle is pinned to the right and the
-	-- text is wrapped to end well before it, so they can never overlap.
-	local btn_w, btn_h = 1.7, 0.7
-	local btn_x = CONTENT_W - btn_w - 0.5      -- toggle pinned to the right
-	local text_right = btn_x - 0.3             -- text must end before here
-	local text_w = text_right - 0.35
-	-- Conservative character budget for the wrapped description (tuned for the
-	-- default font so it stays inside even if the smaller font is unavailable).
-	local desc_chars = math.max(12, math.floor(text_w / 0.23))
-
 	-- Slightly smaller text for the privilege rows. Only affects labels emitted
 	-- after this point (the rows + nothing else of note before the container end).
 	fs[#fs + 1] = "style_type[label;font_size=*0.9]"
 
-	for i, p in ipairs(privs) do
-		local y = 0.1 + (i - 1) * PRIV_ROW_H
+	for _, r in ipairs(rows) do
+		local p, desc, row_h = r.p, r.desc, r.h
 		local is_on = held[p.name] == true
 		local grantable = priviledges_manager.privs.can_grant(viewer, p.name)
 		local btn = "t_" .. p.name
-		local desc = (p.def and p.def.description) or ""
 
 		-- Row background.
 		fs[#fs + 1] = ("box[0.1,%f;%f,%f;#ffffff10]"):format(
-			y, CONTENT_W - 0.5, PRIV_ROW_H - 0.12)
+			r.y, CONTENT_W - 0.5, row_h)
 
 		-- Privilege name.
-		fs[#fs + 1] = ("label[0.35,%f;%s]"):format(y + 0.27, esc(p.name))
+		fs[#fs + 1] = ("label[0.35,%f;%s]"):format(r.y + 0.27, esc(p.name))
 
-		-- Description, manually wrapped to up to two lines that fit the space
-		-- available to the left of the toggle button.
-		if desc ~= "" then
-			local dlines = wrap(desc, desc_chars, 2)
-			for k, line in ipairs(dlines) do
-				fs[#fs + 1] = ("label[0.5,%f;%s]"):format(
-					y + 0.52 + (k - 1) * 0.27, esc(line))
-			end
+		-- Full description, wrapped across as many lines as it needs.
+		for k, line in ipairs(r.dlines) do
+			fs[#fs + 1] = ("label[0.5,%f;%s]"):format(
+				r.y + 0.52 + (k - 1) * LINE_H, esc(line))
 		end
 
 		-- The toggle switch itself: a coloured button, vertically centred.
@@ -172,12 +181,16 @@ local function build_priv_rows(c, viewer)
 		end
 		fs[#fs + 1] = ("style[%s;bgcolor=%s;textcolor=#ffffff]"):format(btn, colour)
 		fs[#fs + 1] = ("button[%f,%f;%f,%f;%s;%s]"):format(
-			btn_x, y + (PRIV_ROW_H - btn_h) / 2 - 0.06, btn_w, btn_h, btn, face)
+			btn_x, r.y + (row_h - btn_h) / 2, btn_w, btn_h, btn, face)
 
+		-- Full description on hover: an area tooltip over the text, plus the
+		-- same text on the toggle itself.
 		local tip = desc ~= "" and desc or p.name
 		if not grantable then
 			tip = tip .. "\nYou are not allowed to change this privilege."
 		end
+		fs[#fs + 1] = ("tooltip[%f,%f;%f,%f;%s]"):format(
+			0.1, r.y, text_right, row_h, esc(tip))
 		fs[#fs + 1] = ("tooltip[%s;%s]"):format(btn, esc(tip))
 	end
 
