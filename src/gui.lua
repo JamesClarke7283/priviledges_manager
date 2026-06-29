@@ -36,9 +36,49 @@ local PRIV_ROW_H = 1.15
 local CONTENT_X, CONTENT_Y = 6.1, 2.2
 local CONTENT_W, CONTENT_H = 12.0, 9.0
 
--- Escape text for use inside a hypertext[] element.
-local function hesc(s)
-	return (s or ""):gsub("\\", "\\\\"):gsub("<", "\\<"):gsub(">", "\\>")
+-- Word-wrap `text` into at most `maxlines` lines of about `maxchars`
+-- characters each, appending an ellipsis if it had to be cut short. This is
+-- deterministic (no reliance on a widget auto-wrapping), so descriptions can
+-- never spill under the toggle button.
+local function wrap(text, maxchars, maxlines)
+	local words = {}
+	for w in tostring(text or ""):gmatch("%S+") do
+		words[#words + 1] = w
+	end
+
+	local lines, cur, i = {}, "", 1
+	while i <= #words do
+		local cand = cur == "" and words[i] or (cur .. " " .. words[i])
+		if #cand <= maxchars then
+			cur = cand
+			i = i + 1
+		elseif cur == "" then
+			-- A single word longer than the line: hard-cut it.
+			cur = words[i]:sub(1, maxchars - 1) .. "\u{2026}"
+			i = i + 1
+		else
+			lines[#lines + 1] = cur
+			cur = ""
+			if #lines == maxlines then
+				break
+			end
+		end
+	end
+	if #lines < maxlines and cur ~= "" then
+		lines[#lines + 1] = cur
+		cur = ""
+	end
+
+	-- Words still remaining means we ran out of lines: mark a truncation.
+	if i <= #words then
+		local last = lines[#lines] or ""
+		if #last + 1 > maxchars then
+			last = last:sub(1, maxchars - 1)
+		end
+		lines[#lines] = last .. "\u{2026}"
+	end
+
+	return lines
 end
 
 local function build_player_list(c)
@@ -86,10 +126,19 @@ local function build_priv_rows(c, viewer)
 	fs[#fs + 1] = ("scroll_container[%f,%f;%f,%f;privscroll;vertical;%f]"):format(
 		CONTENT_X, CONTENT_Y, CONTENT_W, CONTENT_H, scroll_factor)
 
-	-- Geometry shared by every row.
-	local btn_w, btn_h = 1.8, 0.7
-	local btn_x = CONTENT_W - btn_w - 0.7      -- toggle pinned to the right
-	local text_w = btn_x - 0.5                  -- room left for name + desc
+	-- Geometry shared by every row. The toggle is pinned to the right and the
+	-- text is wrapped to end well before it, so they can never overlap.
+	local btn_w, btn_h = 1.7, 0.7
+	local btn_x = CONTENT_W - btn_w - 0.5      -- toggle pinned to the right
+	local text_right = btn_x - 0.3             -- text must end before here
+	local text_w = text_right - 0.35
+	-- Conservative character budget for the wrapped description (tuned for the
+	-- default font so it stays inside even if the smaller font is unavailable).
+	local desc_chars = math.max(12, math.floor(text_w / 0.23))
+
+	-- Slightly smaller text for the privilege rows. Only affects labels emitted
+	-- after this point (the rows + nothing else of note before the container end).
+	fs[#fs + 1] = "style_type[label;font_size=*0.9]"
 
 	for i, p in ipairs(privs) do
 		local y = 0.1 + (i - 1) * PRIV_ROW_H
@@ -103,14 +152,16 @@ local function build_priv_rows(c, viewer)
 			y, CONTENT_W - 0.5, PRIV_ROW_H - 0.12)
 
 		-- Privilege name.
-		fs[#fs + 1] = ("label[0.35,%f;%s]"):format(y + 0.28, esc(p.name))
+		fs[#fs + 1] = ("label[0.35,%f;%s]"):format(y + 0.27, esc(p.name))
 
-		-- Description in a wrapping hypertext box with a smaller font, so even
-		-- long descriptions stay within the row instead of being clipped.
+		-- Description, manually wrapped to up to two lines that fit the space
+		-- available to the left of the toggle button.
 		if desc ~= "" then
-			fs[#fs + 1] = ("hypertext[0.35,%f;%f,%f;d_%s;%s]"):format(
-				y + 0.5, text_w, PRIV_ROW_H - 0.55, p.name,
-				"<global size=13 color=#c8c8c8>" .. hesc(desc))
+			local dlines = wrap(desc, desc_chars, 2)
+			for k, line in ipairs(dlines) do
+				fs[#fs + 1] = ("label[0.5,%f;%s]"):format(
+					y + 0.52 + (k - 1) * 0.27, esc(line))
+			end
 		end
 
 		-- The toggle switch itself: a coloured button, vertically centred.
@@ -131,6 +182,7 @@ local function build_priv_rows(c, viewer)
 	end
 
 	fs[#fs + 1] = "scroll_container_end[]"
+	fs[#fs + 1] = "style_type[label;font_size=*1.0]"
 	return table.concat(fs)
 end
 
